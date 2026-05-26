@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="🚌 스쿨버스 관리" />
+<meta name="theme-color" content="#0a0f14" />
+<title>🚌 스쿨버스 관리</title>
+
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+* { -webkit-tap-highlight-color: transparent; }
+html, body {
+  font-family: "Pretendard", -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #080e18;
+  color: #fff;
+  margin: 0;
+  padding: 0;
+  min-height: 100svh;
+  overflow-x: hidden;
+}
+body {
+  background: linear-gradient(160deg, #1e0b35 0%, #0d1520 55%, #080e18 100%);
+  background-attachment: fixed;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+button { font-family: inherit; cursor: pointer; }
+input { font-family: inherit; }
+input[type="date"] { color-scheme: dark; }
+.spinner {
+  width: 24px; height: 24px;
+  border: 3px solid rgba(255,255,255,.2);
+  border-top-color: #f5c842;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.toast-enter { animation: toastIn .25s ease-out; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.fade-in { animation: fadeIn .3s ease-out; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.slide-up { animation: slideUp .35s ease-out; }
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+// ============================================================
+//  설정
+// ============================================================
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzWOjM293h9y95Kxq8AV0PjNLPzt5vt5uu7pXDHJ5Nfz4wL9EpMaXMreSTHiwcBUPiJ/exec";
+const SEMESTER_START = "2026-04-01";
+
+// ============================================================
+//  API
+// ============================================================
+async function callApi(action, params = {}) {
+  try {
+    const res = await fetch(GAS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action, params }),
+      redirect: "follow"
+    });
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch (e) { return { success: false, message: "응답 파싱 실패" }; }
+  } catch (err) {
+    return { success: false, message: "서버 연결 실패: " + err.message };
+  }
+}
+
+// ============================================================
+//  날짜 유틸
+// ============================================================
+const DAY_NAMES = ["일","월","화","수","목","금","토"];
+
+function getTodayStr() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function formatHeaderDate() {
+  const d = new Date();
+  return d.getFullYear() + ". " + String(d.getMonth()+1).padStart(2,"0") + ". " + String(d.getDate()).padStart(2,"0") + " (" + DAY_NAMES[d.getDay()] + ")";
+}
+function formatKoreanShort(dateStr) {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-");
+  const d = new Date(dateStr + "T00:00:00");
+  return parseInt(parts[1]) + "월 " + parseInt(parts[2]) + "일 (" + DAY_NAMES[d.getDay()] + ")";
+}
+function relativeDays(dateStr) {
+  const today = new Date(getTodayStr() + "T00:00:00");
+  const target = new Date(dateStr + "T00:00:00");
+  const diff = Math.round((today - target) / (1000 * 60 * 60 * 24));
+  if (diff === 0) return "오늘";
+  if (diff === 1) return "어제";
+  return diff + "일 전";
+}
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function startOfMonth() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-01";
+}
+
+// ============================================================
+//  토스트
+// ============================================================
+function Toast({ message, type, onDone }) {
+  React.useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(onDone, 2800);
+    return () => clearTimeout(t);
+  }, [message, onDone]);
+  if (!message) return null;
+  const colors = {
+    ok: "border-emerald-400/50 text-emerald-300",
+    err: "border-red-400/50 text-red-300",
+    info: "border-amber-400/50 text-amber-300"
+  };
+  return (
+    <div className={`toast-enter fixed bottom-6 left-1/2 -translate-x-1/2 z-50 backdrop-blur-md bg-slate-900/90 border ${colors[type] || colors.info} rounded-2xl px-6 py-3 text-sm font-medium shadow-2xl max-w-[90vw] text-center`}>
+      {message}
+    </div>
+  );
+}
+
+// ============================================================
+//  헤더 & 탭 (3개 탭으로 확장)
+// ============================================================
+function Header() {
+  return (
+    <div className="bg-gradient-to-br from-[#1a2737] to-[#0f1923] px-5 pt-6 pb-5 border-b border-amber-400/15">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[11px] tracking-[0.15em] font-medium text-amber-400/70">GWACHEON GIRLS HIGH</div>
+          <div className="text-[20px] font-medium text-amber-400 mt-1">🚌 스쿨버스 관리</div>
+        </div>
+        <div className="text-amber-400/60 text-xl">🔔</div>
+      </div>
+      <div className="mt-3.5 text-xs text-white/50">{formatHeaderDate()}</div>
+    </div>
+  );
+}
+
+function TabSwitcher({ activeTab, onChange }) {
+  const tabs = [
+    { id: "attendance", label: "📋 출석" },
+    { id: "operations", label: "⚙️ 운행" },
+    { id: "stats",      label: "📊 통계" }
+  ];
+  return (
+    <div className="px-3 pt-4">
+      <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl p-1 flex gap-0.5">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            className={`flex-1 py-2.5 rounded-xl text-[11.5px] font-medium transition-all ${
+              activeTab === t.id
+                ? "bg-gradient-to-br from-[#B088F9] to-[#98DDCA] text-[#1a0b2e]"
+                : "text-white/50"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  출석 관리 탭 (이전과 동일)
+// ============================================================
+function AttendanceTab({ showToast }) {
+  const [dateMode, setDateMode] = React.useState("today");
+  const [customDate, setCustomDate] = React.useState(getTodayStr());
+  const [currentGrade, setCurrentGrade] = React.useState("1");
+  const [allStudents, setAllStudents] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [checkingRow, setCheckingRow] = React.useState(null);
+
+  const targetDate = dateMode === "today" ? getTodayStr() : customDate;
+
+  const loadStudents = React.useCallback(async () => {
+    setLoading(true);
+    const res = await callApi("getStudentList", { grade: "", cls: "", targetDate });
+    if (res.success) setAllStudents(res.students || []);
+    else showToast(res.message || "불러오기 실패", "err");
+    setLoading(false);
+  }, [targetDate, showToast]);
+
+  React.useEffect(() => { loadStudents(); }, [loadStudents]);
+
+  const stats = React.useMemo(() => {
+    const total = allStudents.length;
+    const checked = allStudents.filter(s => s.checked).length;
+    return { total, checked, unchecked: total - checked };
+  }, [allStudents]);
+
+  const gradeStats = React.useMemo(() => {
+    const result = {};
+    ["1","2","3"].forEach(g => {
+      const list = allStudents.filter(s => s.grade === g);
+      result[g] = { total: list.length, unchecked: list.filter(s => !s.checked).length };
+    });
+    return result;
+  }, [allStudents]);
+
+  const currentGradeUnchecked = React.useMemo(() =>
+    allStudents.filter(s => s.grade === currentGrade && !s.checked),
+    [allStudents, currentGrade]
+  );
+
+  async function handleCheckIn(student) {
+    setCheckingRow(student.row);
+    const res = await callApi("teacherCheckIn", {
+      grade: student.grade, cls: student.cls, num: student.num, targetDate
+    });
+    if (res.success) {
+      showToast("✅ " + (res.studentName || student.name) + " 탑승 체크 완료!", "ok");
+      await loadStudents();
+    } else {
+      showToast(res.message || "체크 실패", "err");
+    }
+    setCheckingRow(null);
+  }
+
+  return (
+    <div className="px-4 pt-3.5 pb-5 fade-in">
+      <div className="flex gap-2 mb-3.5">
+        <div className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-2xl py-3.5 px-2.5">
+          <div className="text-[10px] tracking-[0.1em] text-white/50">전체</div>
+          <div className="text-2xl font-medium text-white mt-1">{stats.total}</div>
+        </div>
+        <div className="flex-1 bg-emerald-300/[0.08] border border-emerald-300/20 rounded-2xl py-3.5 px-2.5">
+          <div className="text-[10px] tracking-[0.1em] text-emerald-300/70">탑승</div>
+          <div className="text-2xl font-medium text-emerald-300 mt-1">{stats.checked}</div>
+        </div>
+        <div className="flex-1 bg-red-400/[0.08] border border-red-400/20 rounded-2xl py-3.5 px-2.5">
+          <div className="text-[10px] tracking-[0.1em] text-red-400/70">미탑승</div>
+          <div className="text-2xl font-medium text-red-400 mt-1">{stats.unchecked}</div>
+        </div>
+      </div>
+
+      <div className="mb-3.5">
+        <div className="text-[11px] text-white/50 mb-2 pl-1 tracking-[0.08em]">날짜 선택</div>
+        <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl p-1 flex gap-1 mb-2.5">
+          <button onClick={() => setDateMode("today")}
+            className={`flex-1 py-2.5 rounded-xl text-xs font-medium transition-all ${
+              dateMode === "today" ? "bg-amber-400/[0.18] border border-amber-400/40 text-amber-400" : "text-white/50"
+            }`}>📅 오늘</button>
+          <button onClick={() => setDateMode("custom")}
+            className={`flex-1 py-2.5 rounded-xl text-xs font-medium transition-all ${
+              dateMode === "custom" ? "bg-violet-500/[0.18] border border-violet-400/45 text-violet-300" : "text-white/50"
+            }`}>🔍 직접 선택</button>
+        </div>
+
+        {dateMode === "custom" && (
+          <div className="bg-gradient-to-br from-violet-500/[0.12] to-violet-500/[0.04] border border-violet-400/30 rounded-2xl p-3.5 fade-in">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-violet-300 text-sm">📅</span>
+                <span className="text-xs text-violet-300 font-medium">조회할 날짜</span>
+              </div>
+              <span className="text-[10px] text-violet-300/60">{formatKoreanShort(customDate)}</span>
+            </div>
+            <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} max={getTodayStr()}
+              className="w-full bg-black/30 border border-white/[0.08] rounded-xl px-3.5 py-3 text-sm text-white font-medium outline-none" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2 mb-3.5">
+        {["1","2","3"].map(g => {
+          const isActive = currentGrade === g;
+          const gs = gradeStats[g] || { total: 0, unchecked: 0 };
+          return (
+            <button key={g} onClick={() => setCurrentGrade(g)}
+              className={`flex-1 rounded-2xl py-3.5 px-1.5 text-center transition-all ${
+                isActive ? "bg-gradient-to-br from-violet-400/[0.18] to-violet-400/[0.08] border border-violet-400/35"
+                         : "bg-white/[0.04] border border-white/[0.08]"
+              }`}>
+              <div className={`text-[15px] font-medium ${isActive ? "text-violet-300" : "text-white/70"}`}>{g}학년</div>
+              <div className={`text-[10px] mt-1 ${
+                isActive ? "text-violet-300/70" :
+                gs.unchecked > 0 ? "text-red-400/80" : "text-emerald-300/70"
+              }`}>
+                {gs.total === 0 ? "—" : (gs.unchecked > 0 ? `미탑승 ${gs.unchecked}명` : "전원 탑승")}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl overflow-hidden">
+        <div className="px-4 py-3.5 flex justify-between items-center border-b border-white/[0.06]">
+          <span className="text-xs text-white font-medium">
+            {currentGrade}학년 미탑승 · {dateMode === "today" ? "오늘" : formatKoreanShort(customDate)}
+          </span>
+          <span className="text-[11px] px-2.5 py-0.5 rounded-full text-violet-300/90 bg-violet-500/[0.12]">
+            {currentGradeUnchecked.length}명
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="py-14 flex justify-center"><div className="spinner"></div></div>
+        ) : currentGradeUnchecked.length === 0 ? (
+          <div className="py-12 text-center text-white/50 text-sm">
+            {gradeStats[currentGrade]?.total === 0 ? `${currentGrade}학년 학생이 없습니다.` : `✅ ${currentGrade}학년 전원 탑승 완료!`}
+          </div>
+        ) : (
+          currentGradeUnchecked.map((s, i) => (
+            <div key={s.row}
+              className={`px-4 py-3.5 flex justify-between items-center ${i < currentGradeUnchecked.length - 1 ? "border-b border-white/[0.04]" : ""}`}>
+              <div className="flex items-baseline gap-2.5">
+                <div className="text-sm text-white font-medium">{s.name}</div>
+                <div className="text-[11px] text-white/45">{s.grade}학년 {s.cls}반 {s.num}번</div>
+              </div>
+              <button onClick={() => handleCheckIn(s)} disabled={checkingRow === s.row}
+                className="bg-gradient-to-br from-[#B088F9] to-[#98DDCA] rounded-lg px-3 py-1.5 text-[11px] font-medium text-[#1a0b2e] disabled:opacity-50 disabled:cursor-not-allowed min-w-[60px]">
+                {checkingRow === s.row ? "처리중" : "✓ 탑승"}
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  운행 관리 탭 (이전과 동일)
+// ============================================================
+function OperationsTab({ showToast }) {
+  const [status, setStatus] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(null);
+
+  const loadStatus = React.useCallback(async () => {
+    setLoading(true);
+    const res = await callApi("getBusStatus");
+    if (res.success) setStatus(res);
+    else showToast(res.message || "상태 조회 실패", "err");
+    setLoading(false);
+  }, [showToast]);
+
+  React.useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  async function handleCancelSend(type) {
+    const msg = type === "today"
+      ? "오늘 운행 취소 알림톡을 전체 발송하시겠습니까?\n발송 후 미탑승 알림도 자동 차단됩니다."
+      : "내일 운행 취소 알림톡을 전체 발송하시겠습니까?";
+    if (!window.confirm(msg)) return;
+    setBusy("cancel_" + type);
+    const res = await callApi("sendCancelNotification", { type });
+    showToast(res.message || (res.success ? "발송 완료" : "발송 실패"), res.success ? "ok" : "err");
+    if (res.success) await loadStatus();
+    setBusy(null);
+  }
+
+  async function handleBlock(action, label) {
+    setBusy(action);
+    const res = await callApi(action);
+    showToast(res.message || (res.success ? `${label} 완료` : `${label} 실패`), res.success ? "ok" : "err");
+    if (res.success) await loadStatus();
+    setBusy(null);
+  }
+
+  function handleUnlockDevice() {
+    if (!window.confirm("이 기기의 오늘 탑승 잠금을 해제하시겠습니까?\n(학생 페이지에서 다시 입력 가능)")) return;
+    try {
+      localStorage.removeItem("sbus_checked");
+      showToast("🔓 잠금이 해제되었습니다.", "ok");
+    } catch(e) { showToast("잠금 해제 실패: " + e.message, "err"); }
+  }
+
+  const statusInfo = React.useMemo(() => {
+    if (!status) return { dot: "#7a90a8", label: "확인 중…" };
+    if (status.cancelled && status.cancelNotifToday) return { dot: "#ff4757", label: "오늘 운행 취소" };
+    if (status.cancelled) return { dot: "#f5c842", label: "오늘 알림 차단" };
+    if (status.cancelledTomorrow && status.cancelNotifTomorrow) return { dot: "#ff4757", label: "내일 운행 취소" };
+    if (status.cancelledTomorrow) return { dot: "#f5c842", label: "내일 알림 차단" };
+    return { dot: "#3ecf8e", label: "정상 운행" };
+  }, [status]);
+
+  return (
+    <div className="px-4 pt-3.5 pb-5 fade-in">
+      <div className="bg-emerald-300/[0.08] border border-emerald-300/30 rounded-2xl px-4 py-3.5 mb-3.5 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] tracking-[0.1em] text-white/50">오늘 운행 상태</div>
+          <div className="text-base font-medium mt-1 flex items-center gap-1.5" style={{color: statusInfo.dot}}>
+            <span className="inline-block w-2 h-2 rounded-full" style={{background: statusInfo.dot}}></span>
+            {statusInfo.label}
+          </div>
+        </div>
+        <div className="text-2xl">🚌</div>
+      </div>
+
+      <div className="text-[11px] text-white/50 mb-2 pl-1 tracking-[0.08em]">📢 긴급 알림</div>
+
+      <div className="bg-red-400/[0.08] border border-red-400/30 rounded-2xl p-3.5 mb-2.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-red-400">🚫</span>
+          <span className="text-sm text-red-400 font-medium">오늘 운행 취소</span>
+        </div>
+        <div className="text-[11px] text-white/55 leading-relaxed mb-2.5">
+          전체 학생에게 즉시 발송됩니다. 발송 후 오늘 미탑승 알림이 자동 차단됩니다.
+        </div>
+        <button onClick={() => handleCancelSend("today")} disabled={busy === "cancel_today"}
+          className="w-full bg-gradient-to-br from-red-500 to-red-700 rounded-xl py-3 text-white text-[13px] font-medium disabled:opacity-50">
+          {busy === "cancel_today" ? "발송 중…" : "🚫 오늘 취소 알림 발송"}
+        </button>
+      </div>
+
+      <div className="bg-orange-500/[0.08] border border-orange-500/30 rounded-2xl p-3.5 mb-3.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-orange-400">📅</span>
+          <span className="text-sm text-orange-400 font-medium">내일 운행 취소</span>
+        </div>
+        <div className="text-[11px] text-white/55 leading-relaxed mb-2.5">내일 운행 취소를 미리 안내합니다.</div>
+        <button onClick={() => handleCancelSend("tomorrow")} disabled={busy === "cancel_tomorrow"}
+          className="w-full bg-gradient-to-br from-orange-500 to-red-700 rounded-xl py-3 text-white text-[13px] font-medium disabled:opacity-50">
+          {busy === "cancel_tomorrow" ? "발송 중…" : "📅 내일 취소 알림 발송"}
+        </button>
+      </div>
+
+      <div className="text-[11px] text-white/50 mb-2 pl-1 tracking-[0.08em]">⚙️ 알림 제어</div>
+
+      <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl p-3.5 mb-3.5">
+        <div className="text-[11px] text-white/55 leading-relaxed mb-3">
+          운행 없는 날 미탑승 알림을 차단합니다. 매일 자정 자동 초기화됩니다.
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <button onClick={() => handleBlock("setBusCancelled", "오늘 알림 차단")} disabled={busy === "setBusCancelled"}
+            className="bg-red-400/[0.12] border border-red-400/30 rounded-xl py-2.5 px-3.5 text-red-400 text-xs font-medium text-left disabled:opacity-50">
+            🔕 오늘 알림 차단
+          </button>
+          <button onClick={() => handleBlock("setBusCancelledTomorrow", "내일 알림 차단")} disabled={busy === "setBusCancelledTomorrow"}
+            className="bg-red-400/[0.12] border border-red-400/30 rounded-xl py-2.5 px-3.5 text-red-400 text-xs font-medium text-left disabled:opacity-50">
+            🔕 내일 알림 차단
+          </button>
+          <button onClick={() => handleBlock("setBusRestored", "차단 해제")} disabled={busy === "setBusRestored"}
+            className="bg-emerald-400/[0.12] border border-emerald-400/30 rounded-xl py-2.5 px-3.5 text-emerald-300 text-xs font-medium text-left disabled:opacity-50">
+            🔔 차단 해제
+          </button>
+        </div>
+      </div>
+
+      <div className="text-[11px] text-white/50 mb-2 pl-1 tracking-[0.08em]">🧪 도구</div>
+
+      <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl p-3.5">
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="text-amber-400">🔓</span>
+          <span className="text-xs text-white font-medium">이 기기 잠금 해제</span>
+        </div>
+        <div className="text-[10px] text-white/50 leading-relaxed mb-2.5">학생 페이지 출석 잠금을 해제합니다.</div>
+        <button onClick={handleUnlockDevice}
+          className="w-full bg-amber-400/[0.15] border border-amber-400/40 rounded-xl py-2.5 text-amber-400 text-xs font-medium">
+          🔓 잠금 해제
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  📊 통계 탭
+// ============================================================
+function StatsTab({ showToast }) {
+  const [startDate, setStartDate] = React.useState(SEMESTER_START);
+  const [endDate, setEndDate] = React.useState(getTodayStr());
+  const [filter, setFilter] = React.useState(0);       // 0=전체, 3/5/10/20
+  const [gradeFilter, setGradeFilter] = React.useState("all");
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [selectedStudent, setSelectedStudent] = React.useState(null);
+
+  const loadStats = React.useCallback(async () => {
+    setLoading(true);
+    const res = await callApi("getAttendanceStats", { startDate, endDate });
+    if (res.success) setData(res);
+    else showToast(res.message || "통계 조회 실패", "err");
+    setLoading(false);
+  }, [startDate, endDate, showToast]);
+
+  React.useEffect(() => { loadStats(); }, [loadStats]);
+
+  function applyPreset(preset) {
+    const today = getTodayStr();
+    if (preset === "30days") {
+      setStartDate(addDays(today, -29));
+      setEndDate(today);
+    } else if (preset === "month") {
+      setStartDate(startOfMonth());
+      setEndDate(today);
+    } else if (preset === "semester") {
+      setStartDate(SEMESTER_START);
+      setEndDate(today);
+    }
+  }
+
+  // 현재 활성 프리셋
+  const activePreset = React.useMemo(() => {
+    const today = getTodayStr();
+    if (endDate !== today) return null;
+    if (startDate === addDays(today, -29)) return "30days";
+    if (startDate === startOfMonth()) return "month";
+    if (startDate === SEMESTER_START) return "semester";
+    return null;
+  }, [startDate, endDate]);
+
+  // 필터링된 학생 목록
+  const filteredStudents = React.useMemo(() => {
+    if (!data || !data.students) return [];
+    let list = data.students;
+    if (gradeFilter !== "all") list = list.filter(s => s.grade === gradeFilter);
+    if (filter > 0) list = list.filter(s => s.missedCount >= filter);
+    return list;
+  }, [data, filter, gradeFilter]);
+
+  function missedColor(n) {
+    if (n >= 20) return { bg: "#ff4757", text: "#ff6b6b" };
+    if (n >= 10) return { bg: "#ff6b35", text: "#ff8c66" };
+    if (n >= 5)  return { bg: "rgba(245,200,66,0.85)", text: "#f5c842" };
+    return { bg: "rgba(155,143,245,0.7)", text: "#c4baff" };
+  }
+
+  function rankColor(n) {
+    if (n >= 20) return "#ff4757";
+    if (n >= 10) return "#ff6b35";
+    if (n >= 5)  return "rgba(245,200,66,0.85)";
+    return "rgba(155,143,245,0.7)";
+  }
+
+  return (
+    <div className="px-4 pt-3.5 pb-5 fade-in">
+
+      {/* 조회 기간 카드 */}
+      <div className="bg-violet-500/[0.08] border border-violet-400/30 rounded-2xl p-3.5 mb-3.5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-violet-300 text-[13px]">📅</span>
+            <span className="text-xs text-violet-300 font-medium">조회 기간</span>
+          </div>
+          <span className="text-[10px] text-violet-300/60">
+            {data ? `총 ${data.totalDays}일 운행` : ""}
+          </span>
+        </div>
+
+        {/* 빠른 선택 버튼 */}
+        <div className="flex gap-1.5 mb-2.5">
+          {[
+            { id: "30days",   label: "최근 30일" },
+            { id: "month",    label: "이번달" },
+            { id: "semester", label: "학기 전체" }
+          ].map(p => (
+            <button key={p.id} onClick={() => applyPreset(p.id)}
+              className={`flex-1 py-1.5 text-[10.5px] rounded-lg transition-all ${
+                activePreset === p.id
+                  ? "bg-violet-500/[0.2] border border-violet-400/45 text-violet-300 font-medium"
+                  : "border border-white/[0.08] text-white/50"
+              }`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* 시작 / 종료 */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 bg-black/30 border border-white/[0.08] rounded-xl px-2.5 py-2">
+            <div className="text-[9px] text-white/45 mb-0.5">시작</div>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} max={endDate}
+              className="w-full bg-transparent text-[12.5px] text-white font-medium outline-none" />
+          </div>
+          <span className="text-white/40 text-sm">~</span>
+          <div className="flex-1 bg-black/30 border border-white/[0.08] rounded-xl px-2.5 py-2">
+            <div className="text-[9px] text-white/45 mb-0.5">종료</div>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} min={startDate} max={getTodayStr()}
+              className="w-full bg-transparent text-[12.5px] text-white font-medium outline-none" />
+          </div>
+        </div>
+      </div>
+
+      {/* 미탑승 필터 */}
+      <div className="mb-3.5">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] text-white/50 pl-1 tracking-[0.08em]">미탑승 필터</span>
+          <span className="text-[11px] text-amber-400 font-medium">
+            {filter === 0 ? "전체" : `${filter}일 이상`}
+          </span>
+        </div>
+        <div className="flex gap-1.5">
+          {[
+            { val: 0,  label: "전체" },
+            { val: 3,  label: "3일↑" },
+            { val: 5,  label: "5일↑" },
+            { val: 10, label: "10일↑" },
+            { val: 20, label: "20일↑" }
+          ].map(f => (
+            <button key={f.val} onClick={() => setFilter(f.val)}
+              className={`flex-1 py-2.5 text-[11px] rounded-lg transition-all ${
+                filter === f.val
+                  ? "bg-amber-400/[0.18] border border-amber-400/40 text-amber-400 font-medium"
+                  : "border border-white/[0.08] bg-white/[0.03] text-white/50"
+              }`}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 학년 필터 */}
+      <div className="flex gap-1.5 mb-3.5">
+        {[
+          { val: "all", label: "전체" },
+          { val: "1",   label: "1학년" },
+          { val: "2",   label: "2학년" },
+          { val: "3",   label: "3학년" }
+        ].map(g => (
+          <button key={g.val} onClick={() => setGradeFilter(g.val)}
+            className={`flex-1 rounded-xl py-2 text-[12px] transition-all ${
+              gradeFilter === g.val
+                ? "bg-gradient-to-br from-violet-400/[0.18] to-violet-400/[0.08] border border-violet-400/35 text-violet-300 font-medium"
+                : "bg-white/[0.04] border border-white/[0.08] text-white/60"
+            }`}>
+            {g.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 학생 목록 */}
+      <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl overflow-hidden">
+        <div className="px-4 py-3.5 flex justify-between items-center border-b border-white/[0.06]">
+          <span className="text-xs text-white font-medium">
+            {filter === 0 ? "전체 학생" : `미탑승 ${filter}일 이상`}
+          </span>
+          <span className="text-[11px] px-2.5 py-0.5 rounded-full text-red-400 bg-red-400/[0.12] font-medium">
+            {filteredStudents.length}명
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="py-14 flex flex-col items-center justify-center gap-3">
+            <div className="spinner"></div>
+            <div className="text-[11px] text-white/40">통계 계산 중…</div>
+          </div>
+        ) : filteredStudents.length === 0 ? (
+          <div className="py-12 text-center text-white/50 text-sm">
+            {data ? "✅ 해당 조건의 학생이 없습니다." : "데이터를 불러오는 중입니다."}
+          </div>
+        ) : (
+          filteredStudents.map((s, i) => (
+            <button key={s.key} onClick={() => setSelectedStudent(s)}
+              className={`w-full px-4 py-3.5 flex justify-between items-center text-left hover:bg-white/[0.02] transition-colors ${
+                i < filteredStudents.length - 1 ? "border-b border-white/[0.04]" : ""
+              }`}>
+              <div className="flex items-center gap-2.5">
+                <div className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-[10px] font-medium text-white"
+                  style={{background: rankColor(s.missedCount)}}>
+                  {i + 1}
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <div className="text-sm text-white font-medium">{s.name}</div>
+                  <div className="text-[10px] text-white/45">{s.grade}학년 {s.cls}반 {s.num}번</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="text-right">
+                  <div className="text-sm font-medium" style={{color: missedColor(s.missedCount).text}}>
+                    {s.missedCount}일
+                  </div>
+                  <div className="text-[9px] text-white/40 mt-0.5">탑승률 {s.attendanceRate}%</div>
+                </div>
+                <span className="text-white/30 text-sm">›</span>
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+
+      {/* 학생 상세 모달 */}
+      {selectedStudent && (
+        <StudentDetailModal
+          student={selectedStudent}
+          totalDays={data?.totalDays || 0}
+          onClose={() => setSelectedStudent(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+//  학생 상세 모달
+// ============================================================
+function StudentDetailModal({ student, totalDays, onClose }) {
+  const [showAll, setShowAll] = React.useState(false);
+  const visibleDates = showAll ? student.missedDates : student.missedDates.slice(0, 7);
+
+  // 스크롤 잠금
+  React.useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
+  function getDateRowBg(idx, dateStr) {
+    if (dateStr === getTodayStr()) return "bg-red-400/[0.06]";
+    return "";
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-stretch justify-center bg-black/60 backdrop-blur-sm">
+      <div className="slide-up w-full max-w-[420px] min-h-screen flex flex-col bg-gradient-to-b from-[#1e0b35] via-[#0d1520] to-[#080e18] overflow-y-auto">
+
+        {/* 헤더 */}
+        <div className="bg-gradient-to-br from-[#1a2737] to-[#0f1923] px-5 pt-5 pb-4 border-b border-amber-400/15 sticky top-0 z-10">
+          <div className="flex items-center gap-3">
+            <button onClick={onClose} className="text-white/70 text-xl px-1">‹</button>
+            <div className="flex-1">
+              <div className="text-[11px] text-white/50">학생 상세</div>
+              <div className="text-lg font-medium text-amber-400 mt-0.5">{student.name}</div>
+            </div>
+            <div className="text-[11px] text-white/50 text-right leading-tight">
+              {student.grade}학년 {student.cls}반<br/>{student.num}번
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 pt-4 pb-5">
+
+          {/* 3개 통계 카드 */}
+          <div className="flex gap-2 mb-3.5">
+            <div className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-2xl py-3 px-2.5 text-center">
+              <div className="text-[9px] tracking-[0.1em] text-white/50">운행일</div>
+              <div className="text-2xl font-medium text-white mt-1">{student.totalDays}</div>
+            </div>
+            <div className="flex-1 bg-emerald-300/[0.08] border border-emerald-300/20 rounded-2xl py-3 px-2.5 text-center">
+              <div className="text-[9px] tracking-[0.1em] text-emerald-300/70">탑승</div>
+              <div className="text-2xl font-medium text-emerald-300 mt-1">{student.riddenCount}</div>
+            </div>
+            <div className="flex-1 bg-red-400/[0.08] border border-red-400/20 rounded-2xl py-3 px-2.5 text-center">
+              <div className="text-[9px] tracking-[0.1em] text-red-400/70">미탑승</div>
+              <div className="text-2xl font-medium text-red-400 mt-1">{student.missedCount}</div>
+            </div>
+          </div>
+
+          {/* 탑승률 카드 */}
+          <div className="bg-violet-500/[0.08] border border-violet-400/25 rounded-2xl p-3.5 mb-3.5">
+            <div className="flex items-center justify-between mb-2.5">
+              <span className="text-xs text-violet-300 font-medium">탑승률</span>
+              <span className="text-lg text-violet-300 font-medium">{student.attendanceRate}%</span>
+            </div>
+            <div className="bg-black/30 h-2 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all"
+                style={{
+                  width: student.attendanceRate + "%",
+                  background: "linear-gradient(90deg, #ff6b6b, #f5c842, #9b8ff5)"
+                }}></div>
+            </div>
+            <div className="flex justify-between text-[9px] text-white/40 mt-1.5">
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+          </div>
+
+          {/* 미탑승 날짜 리스트 */}
+          <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl overflow-hidden">
+            <div className="px-4 py-3.5 flex justify-between items-center border-b border-white/[0.06]">
+              <div className="flex items-center gap-1.5">
+                <span className="text-red-400 text-[13px]">📅</span>
+                <span className="text-xs text-white font-medium">미탑승 날짜</span>
+              </div>
+              <span className="text-[11px] px-2.5 py-0.5 rounded-full text-red-400 bg-red-400/[0.12] font-medium">
+                {student.missedCount}일
+              </span>
+            </div>
+
+            {student.missedDates.length === 0 ? (
+              <div className="py-10 text-center text-emerald-300/80 text-sm">
+                ✅ 전 기간 모두 탑승했습니다!
+              </div>
+            ) : (
+              <>
+                {visibleDates.map((dateStr, i) => (
+                  <div key={dateStr}
+                    className={`px-4 py-2.5 flex items-center justify-between ${
+                      i < visibleDates.length - 1 ? "border-b border-white/[0.04]" : ""
+                    } ${getDateRowBg(i, dateStr)}`}>
+                    <div>
+                      <div className={`text-[13px] font-medium ${
+                        dateStr === getTodayStr() ? "text-white" : "text-white/90"
+                      }`}>
+                        {formatKoreanShort(dateStr)}
+                      </div>
+                      <div className="text-[10px] text-white/40 mt-0.5">{relativeDays(dateStr)}</div>
+                    </div>
+                    <span className="text-[10px] text-red-400 bg-red-400/[0.15] px-2 py-0.5 rounded">미탑승</span>
+                  </div>
+                ))}
+
+                {!showAll && student.missedDates.length > 7 && (
+                  <button onClick={() => setShowAll(true)}
+                    className="w-full px-4 py-3 flex items-center justify-between text-white/55 text-[12.5px] hover:bg-white/[0.02] transition-colors">
+                    <span>… 더보기 ({student.missedDates.length - 7}일)</span>
+                    <span className="text-white/30">›</span>
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  앱
+// ============================================================
+function App() {
+  const [activeTab, setActiveTab] = React.useState("attendance");
+  const [toast, setToast] = React.useState({ message: "", type: "info" });
+
+  const showToast = React.useCallback((message, type) => {
+    setToast({ message, type });
+  }, []);
+
+  return (
+    <div className="min-h-screen w-full max-w-[420px] mx-auto">
+      <Header />
+      <TabSwitcher activeTab={activeTab} onChange={setActiveTab} />
+      {activeTab === "attendance" && <AttendanceTab showToast={showToast} />}
+      {activeTab === "operations" && <OperationsTab showToast={showToast} />}
+      {activeTab === "stats" && <StatsTab showToast={showToast} />}
+      <Toast message={toast.message} type={toast.type} onDone={() => setToast({ message: "", type: "info" })} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("service-worker.js").catch(err => {
+      console.warn("SW 등록 실패:", err);
+    });
+  });
+}
+</script>
+</body>
+</html>
