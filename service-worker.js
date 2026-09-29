@@ -1,63 +1,85 @@
-// ============================================================
-//  🚌 스쿨버스 관리 PWA Service Worker
-//  배포 시 CACHE_NAME 의 버전 숫자만 올리면 캐시 무효화됨
-// ============================================================
-const CACHE_NAME = "school-admin-v6";
-const URLS_TO_CACHE = [
-  "./",
-  "./index.html",
-  "./manifest.json",
-  "./icons/icon-192.png",
-  "./icons/icon-512.png",
-  "./icons/apple-touch-icon.png",
-  "./icons/favicon-32.png"
-];
+const CACHE_NAME = 'school-admin-v7-netfirst';
+const PRECACHE = ['./manifest.json'];
 
-// 설치 시 정적 파일 캐시
-self.addEventListener("install", (event) => {
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)));
+});
+
+self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(URLS_TO_CACHE).catch(() => {}))
-      .then(() => self.skipWaiting())
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
 });
 
-// 활성화 시 이전 캐시 삭제
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys().then((names) =>
-      Promise.all(
-        names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))
-      )
-    ).then(() => self.clients.claim())
-  );
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
-// 요청 처리
-//  - GAS API 호출(.googleusercontent / script.google.com)은 항상 네트워크
-//  - 정적 자원만 캐시 우선
-self.addEventListener("fetch", (event) => {
-  const url = event.request.url;
+function isApiRequest(url) {
+  return url.includes('script.google.com') || url.includes('script.googleusercontent.com');
+}
 
-  // API 호출은 캐시 안 함
-  if (url.includes("script.google.com") || url.includes("googleusercontent.com")) {
-    event.respondWith(fetch(event.request));
+function isHtmlRequest(request, url) {
+  return request.mode === 'navigate'
+    || url.endsWith('/')
+    || url.endsWith('/index.html')
+    || (request.headers.get('accept') || '').includes('text/html');
+}
+
+function isCdnScript(url) {
+  return url.includes('cdn.jsdelivr.net') || url.includes('unpkg.com') || url.includes('cdn.tailwindcss.com');
+}
+
+async function networkFirst(request, fallbackToIndex) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const res = await fetch(request, { cache: 'no-store' });
+    if (res && res.ok) cache.put(request, res.clone());
+    return res;
+  } catch (e) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    if (fallbackToIndex) {
+      const idx = await cache.match('./index.html');
+      if (idx) return idx;
+    }
+    throw e;
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const res = await fetch(request);
+  if (res && res.ok && res.type !== 'opaque') cache.put(request, res.clone());
+  return res;
+}
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = request.url;
+
+  if (isApiRequest(url)) return;
+
+  if (isHtmlRequest(request, url)) {
+    event.respondWith(networkFirst(request, true));
     return;
   }
 
-  // 정적 자원: 캐시 우선, 실패 시 네트워크
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        // 캐시할 만한 응답만 저장
-        if (!response || response.status !== 200 || response.type === "opaque") {
-          return response;
-        }
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        return response;
-      }).catch(() => cached);
-    })
-  );
+  if (url.endsWith('/service-worker.js') || url.endsWith('/manifest.json')) {
+    event.respondWith(networkFirst(request, false));
+    return;
+  }
+
+  if (isCdnScript(url)) {
+    event.respondWith(networkFirst(request, false));
+    return;
+  }
+
+  event.respondWith(cacheFirst(request));
 });
